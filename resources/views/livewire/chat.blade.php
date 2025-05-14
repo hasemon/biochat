@@ -7,12 +7,14 @@ new class extends Component {
     public $selectedUser;
     public $newMessage;
     public $messages;
+    public $loginID;
 
     public function mount()
     {
         $this->users = \App\Models\User::whereNot('id', \Illuminate\Support\Facades\Auth::id())->latest()->get();
         $this->selectedUser = $this->users->first();
         $this->loadMessages();
+        $this->loginID = Auth::id();
     }
 
     public function selectUser($id)
@@ -34,6 +36,8 @@ new class extends Component {
         $this->messages->push($message);
 
         $this->newMessage = '';
+
+        broadcast(new \App\Events\MessageSent($message));
     }
 
     public function loadMessages()
@@ -43,7 +47,27 @@ new class extends Component {
                 $this->selectedUser->id))
             ->orWhere(fn($q) => $q->where('sender_id', $this->selectedUser->id)->where('receiver_id',
                 \Illuminate\Support\Facades\Auth::id()))
-            ->latest()->get();
+            ->get();
+    }
+
+    public function updatedNewMessage($value)
+    {
+        $this->dispatch("userTyping", userID: $this->loginID, userName: \Illuminate\Support\Facades\Auth::user()->name, selectedUserId: $this->selectedUser->id);
+    }
+
+    public function getListeners()
+    {
+        return [
+          "echo-private:chat.{$this->loginID},MessageSent" => "newChatMessageNotification"
+        ];
+    }
+
+    public function newChatMessageNotification($message)
+    {
+        if ($message['sender_id'] === $this->selectedUser->id){
+            $messageObj = \App\Models\ChatMessage::find($message['id']);
+            $this->messages->push($messageObj);
+        }
     }
 
 }; ?>
@@ -89,10 +113,12 @@ new class extends Component {
                 @endforeach
             </div>
 
+            <div id="typing-indicator" class="px-4 pb-1 text-xs text-gray-400 italic"></div>
+
             <!-- Input -->
             <form wire:submit="submit" class="p-4 border-t bg-white flex items-center gap-2">
                 <input
-                        wire:model="newMessage"
+                        wire:model.live="newMessage"
                         type="text"
                         class="flex-1 border border-gray-300 rounded-full px-4 py-2 text-sm focus:outline-none focus:ring focus:ring-blue-300"
                         placeholder="Type your message..."/>
@@ -105,3 +131,23 @@ new class extends Component {
     </div>
 
 </div>
+
+<script>
+    document.addEventListener('livewire:initialized', () => {
+        Livewire.on('userTyping', (event) => {
+            console.log(event);
+            window.Echo.private(`chat.${event.selectedUserId}`).whisper('typing', {
+                userID: event.userID,
+                userName: event.userName
+            })
+        });
+
+        window.Echo.private(`chat.{{ $loginID }}`).listenForWhisper('typing', (e) => {
+            const t = document.getElementById('typing-indicator');
+            t.innerText = `${e.userName} is typing...`;
+            setTimeout(() => {
+                t.innerText = '';
+            }, 2000);
+        })
+    })
+</script>
